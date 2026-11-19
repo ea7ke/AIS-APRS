@@ -1,84 +1,104 @@
-# AIS-APRS para OpenCPN
+# AIS-APRS for OpenCPN
 
-Aplicación de escritorio (Python + Tkinter) que amplía [OpenCPN](https://opencpn.org) con dos servicios por internet, usando la posición GPS que el propio OpenCPN envía por la red:
+*[Leer en español](README.es.md)*
 
-- **AIS por internet**: descarga en tiempo real los barcos cercanos desde [aisstream.io](https://aisstream.io) y los entrega a OpenCPN como sentencias NMEA `!AIVDM`. Así aparecen en la carta igual que los de un receptor AIS.
-- **Posición por APRS-IS**: publica la posición del barco (con rumbo y velocidad) en la red APRS-IS, para que se vea en [aprs.fi](https://aprs.fi) y webs similares. *Requiere licencia de radioaficionado.*
+A small desktop app (Python + Tkinter) that adds two internet services to [OpenCPN](https://opencpn.org), using the GPS data that OpenCPN itself sends over the network:
 
-Pensado para barcos que solo tienen receptor AIS (o ninguno) y quieren ver el tráfico más allá del alcance de su antena, y que les puedan seguir desde tierra.
+- **Internet AIS**: downloads live AIS targets near the vessel from [aisstream.io](https://aisstream.io) and feeds them to OpenCPN as standard NMEA `!AIVDM` sentences, so they appear on the chart like targets from a normal receiver.
+- **APRS position reporting**: publishes the vessel's position (with course and speed) to the APRS-IS network, so it can be followed on [aprs.fi](https://aprs.fi) and similar sites. *Requires an amateur radio licence.*
 
-> ⚠️ El AIS por internet llega con retraso y solo muestra los barcos que capta alguna estación costera de aisstream. **No sustituye a un receptor AIS ni a la vigilancia visual** para evitar abordajes.
+It is meant for boats that only have an AIS receiver (or none) and want to see traffic beyond the range of their antenna, and to be followed from ashore.
 
-## Archivos
+> ⚠️ Internet AIS has variable delays and only shows vessels picked up by a shore station in the aisstream network. **It is not a replacement for an AIS receiver or a proper lookout, and must never be used for collision avoidance.**
 
-| Archivo | Qué es |
+## Features
+
+- Internet AIS area that **re-centres automatically** as the vessel moves.
+- **VHF priority**: if your own AIS receiver feeds OpenCPN, any vessel heard on the radio is ignored from the internet for a configurable time (5 min by default). Targets do not jump between the real-time and the delayed position.
+- **Stale data filter**: internet reports older than a configurable age (120 s by default) are dropped. Their age is measured against GPS time, so a wrong PC clock does not matter.
+- **Internet targets are marked**: OpenCPN cannot colour targets by source, so their names get a suffix, `NEPTUNE THELIS (NET)` by default.
+- **APRS beacons**: at a set interval when moving and when stopped, plus an extra beacon on large course changes. Nothing is sent without a recent GPS fix.
+- **Interface in English and Spanish**, selectable in the app (automatic by default).
+- Built-in **test vessel**, to check the OpenCPN connection.
+
+## Files
+
+| File | What it is |
 |---|---|
-| `opencpn_net.pyw` | La aplicación con ventana (AIS + APRS). Se abre con doble clic, sin consola. |
-| `aisstream_opencpn.py` | Codificador AIS → NMEA. La app lo necesita en la misma carpeta. También funciona solo, desde la línea de comandos. |
+| `opencpn_net.pyw` | The windowed app (AIS + APRS). Opens with a double click, without a console. |
+| `aisstream_opencpn.py` | AIS encoder and internet/VHF merging filter. The app needs it in the same folder. It also works on its own from the command line. |
+| `i18n.py` | Translations (English / Spanish). |
 
-## Instalación
+## Installation
 
-1. Instala [Python 3](https://www.python.org/downloads/) (en Windows marca *Add python.exe to PATH*).
-2. Instala la única dependencia (solo para el AIS):
+1. Install [Python 3](https://www.python.org/downloads/) (on Windows, tick *Add python.exe to PATH*).
+2. Install the only dependency (needed for AIS only):
    ```
    pip install -r requirements.txt
    ```
-3. Copia los dos archivos en la misma carpeta.
-4. Consigue una API key gratuita en [aisstream.io](https://aisstream.io) (se entra con la cuenta de GitHub).
+3. Put the three `.py`/`.pyw` files in the same folder.
+4. Get a free API key at [aisstream.io](https://aisstream.io) (sign in with a GitHub account).
 
-## Configuración de OpenCPN
+## OpenCPN setup
 
-En *Opciones → Conexiones → Añadir conexión*:
+In *Options → Connections → Add connection*:
 
-| Conexión | Tipo | Dirección | Puerto | Dirección del dato |
+| Connection | Type | Address | Port | Direction |
 |---|---|---|---|---|
-| Entrada AIS | Red, UDP | `127.0.0.1` | `10111` | Recibir datos |
-| Salida GPS | Red, UDP | `127.0.0.1` | `10112` | Enviar datos, filtro de salida **RMC** |
+| AIS input | Network, UDP | `127.0.0.1` | `10111` | Receive input |
+| Data output | Network, UDP | `127.0.0.1` | `10112` | Output on this port, output filter **RMC** and **VDM** |
 
-El mismo puerto GPS lo usan el AIS (para centrar la zona de búsqueda en el barco) y el APRS.
+- **RMC** provides the position, used to centre the AIS area and for APRS.
+- **VDM** forwards the AIS targets received by your own VHF, and is only needed for **VHF priority**. For that, your AIS receiver must already be an input in OpenCPN, for example through a serial NMEA 0183 port or an NMEA 2000 gateway. The app recognises and ignores its own internet data if OpenCPN echoes it back.
 
-## Uso
+## Usage
 
-Abre `opencpn_net.pyw`. Tiene cuatro pestañas:
+Open `opencpn_net.pyw`. It has four tabs:
 
-- **Estado**: posición GPS, estado de AIS y APRS, tráfico recibido, última baliza y un registro de mensajes. Botones para iniciar o parar cada servicio y para *Enviar posición ahora*.
-- **AIS**: API key, radio de la zona en millas, IP y puerto de salida hacia OpenCPN, MMSI a ignorar (el propio) y un *barco de prueba* ficticio a 1 milla para comprobar que OpenCPN recibe los datos.
-- **APRS**: indicativo con SSID (`-8` es lo habitual para barcos), passcode APRS-IS (con botón para calcularlo), servidor, símbolo (`/Y` velero, `/s` barco), comentario e intervalos de baliza.
-- **General**: puerto GPS, posición inicial (mientras no hay GPS), ruta de OpenCPN y opción de abrirlo al arrancar.
+- **Status**: GPS position, AIS and APRS status, traffic received (with the number of reports dropped as stale or heard on VHF), last beacon and a message log. It has buttons to start and stop each service and to *Send position now*.
+- **AIS**: API key, radius of the area in NM, output IP and port to OpenCPN, MMSI to ignore (your own), maximum report age, VHF priority time, name suffix for internet targets, and the test vessel.
+- **APRS**: callsign with SSID (`-8` is usual for boats), APRS-IS passcode (with a button to calculate it), server, symbol (`/Y` sailboat, `/s` ship), comment and beacon intervals.
+- **General**: language, data port, initial position (used until GPS data arrives), OpenCPN path, and an option to launch OpenCPN at start-up.
 
-Con *Iniciar … automáticamente* y *Abrir OpenCPN al abrir esta app* marcados, un único acceso directo lo arranca todo. Si el doble clic usa otra instalación de Python sin `websockets`, crea un acceso directo que apunte explícitamente a ella:
+If you tick *Start … automatically* and *Open OpenCPN when this app starts*, a single shortcut starts everything. If a double click runs a different Python installation without `websockets`, create a shortcut that points to the right one explicitly:
 
 ```
 "C:\...\Python313\pythonw.exe" "C:\...\opencpn_net.pyw"
 ```
 
-La configuración se guarda en `opencpn_net_config.json`, junto a la app. Ese archivo contiene la API key y el passcode y **no se sube al repositorio** (está en `.gitignore`).
+Settings are saved in `opencpn_net_config.json`, next to the app. That file contains your API key and passcode, so it is excluded from the repository (`.gitignore`). Settings from version 1.0 are imported automatically.
 
-### Balizas APRS
+### APRS beacons
 
-Ejemplo de paquete enviado:
+Example packet:
 
 ```
 N0CALL-8>APRS,TCPIP*:!3636.00N/00618.00WY200/005OpenCPN AIS-APRS
 ```
 
-- Navegando (≥ 1 kn): cada *N* minutos (5 por defecto), más una baliza extra si el rumbo cambia ≥ 30° (como mucho una por minuto).
-- Parado: cada 30 minutos.
-- No se envía nada si el GPS lleva más de 2 minutos sin dar datos.
-- Mínimos forzados de 1 min navegando y 5 min parado, para no saturar la red APRS.
+It contains the position, the symbol, the course over ground and speed in knots (only when moving, ≥ 0.5 kn) and the comment.
 
-## Uso por línea de comandos (solo AIS)
+- Moving (≥ 1 kn): every *N* minutes (5 by default), plus an extra beacon when the course changes ≥ 30° (at most once a minute).
+- Stopped: every 30 minutes.
+- Nothing is sent if there has been no GPS data for 2 minutes.
+- The minimum intervals are 1 min when moving and 5 min when stopped, so as not to flood the APRS network.
+
+## Command line (AIS only)
 
 ```
-python aisstream_opencpn.py --key TU_API_KEY --lat 36.6 --lon -6.3 --radio 30 --gps-port 10112
+python aisstream_opencpn.py --key YOUR_API_KEY --lat 36.6 --lon -6.3 --radius 30 --gps-port 10112
 ```
 
-Opciones útiles: `--diag` (muestra cada barco recibido y su distancia), `--test` (barco ficticio de prueba), `-v` (muestra cada sentencia NMEA), `--timeout` (espera al conectar). Ver `--help`.
+Useful options: `--max-age`, `--rf-hold`, `--tag`, `--diag` (prints every vessel received and its distance), `--test` (fake test vessel), `-v` (prints every NMEA sentence), `--lang es|en`. See `--help`.
 
-## Tipos AIS soportados
+## Supported AIS message types
 
-1, 2 y 3 (posición clase A), 5 (datos estáticos clase A), 18 y 19 (posición clase B) y 24 (datos estáticos clase B). El codificador AIS está implementado sin dependencias externas.
+1, 2 and 3 (class A position), 5 (class A static data), 18 and 19 (class B position) and 24 (class B static data). The AIS encoder has no external dependencies.
 
-## Licencia
+## Related projects
 
-Copyright (C) 2026 EA7KE. Distribuido bajo la [GNU General Public License v2.0 o posterior](LICENSE) (GPL-2.0-or-later), la misma familia de licencia que OpenCPN.
+- [AisLive_pi](https://github.com/Kupofty/AisLive_pi): an OpenCPN plugin that shows internet AIS from OpenWaters.io.
+
+## Licence
+
+Copyright (C) 2026 EA7KE. Distributed under the [GNU General Public License v2.0 or later](LICENSE) (GPL-2.0-or-later), the same licence family as OpenCPN.

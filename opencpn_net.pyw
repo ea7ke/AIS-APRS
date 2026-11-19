@@ -1,22 +1,24 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: GPL-2.0-or-later
 # Copyright (C) 2026 EA7KE
-# Este programa es software libre: puede redistribuirlo y/o modificarlo bajo
-# los términos de la Licencia Pública General GNU, versión 2 o (a su elección)
-# cualquier versión posterior. Se distribuye SIN NINGUNA GARANTÍA. Ver LICENSE.
+# This program is free software: you can redistribute it and/or modify it under
+# the terms of the GNU General Public License, version 2 or (at your option)
+# any later version. It is distributed WITHOUT ANY WARRANTY. See LICENSE.
 """
-AIS + APRS para OpenCPN
-=======================
-Una sola app con ventana que, usando la posición GPS que envía OpenCPN:
-  * AIS:  descarga barcos de aisstream.io y los envía a OpenCPN por UDP.
-  * APRS: publica la posición del barco en APRS-IS (aprs.fi y similares).
+AIS + APRS for OpenCPN
+======================
+A single windowed app that, using the data OpenCPN sends over UDP:
+  * AIS:  downloads vessels from aisstream.io and feeds them to OpenCPN,
+          giving priority to vessels heard on the local VHF AIS receiver.
+  * APRS: publishes the vessel's position to APRS-IS (aprs.fi and similar).
 
-Necesita en la misma carpeta:  aisstream_opencpn.py
-Librería:                      pip install websockets   (solo para el AIS)
+Needs in the same folder:  aisstream_opencpn.py, i18n.py
+Library:                   pip install websockets   (AIS only)
 
-OpenCPN (Opciones -> Conexiones):
-  * Entrada AIS:  Red, UDP, 127.0.0.1, puerto 10111, "Recibir datos".
-  * Salida GPS:   Red, UDP, 127.0.0.1, puerto 10112, "Enviar datos", filtro RMC.
+OpenCPN (Options -> Connections):
+  * AIS input:   Network, UDP, 127.0.0.1, port 10111, "Receive input".
+  * Data output: Network, UDP, 127.0.0.1, port 10112, "Output on this port",
+                 output filter RMC and VDM.
 """
 
 import asyncio
@@ -31,75 +33,93 @@ import time
 import tkinter as tk
 from tkinter import ttk, messagebox, filedialog
 
-CARPETA = os.path.dirname(os.path.abspath(__file__))
-sys.path.insert(0, CARPETA)
+FOLDER = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, FOLDER)
 import aisstream_opencpn as ais  # noqa: E402
+from i18n import t, set_language, LANGUAGES  # noqa: E402
 
-CONFIG = os.path.join(CARPETA, "opencpn_net_config.json")
-VERSION_APRS = "OpenCPN-AIS-APRS 1.0"
+CONFIG = os.path.join(FOLDER, "opencpn_net_config.json")
+APRS_VERSION = "OpenCPN-AIS-APRS 1.1"
 
-POR_DEFECTO = {
+DEFAULTS = {
     # General
+    "language": "auto",
     "gps_port": 10112,
     "lat": 0.0,
     "lon": 0.0,
-    "abrir_opencpn": False,
-    "ruta_opencpn": r"C:\Program Files\OpenCPN\opencpn.exe",
+    "open_opencpn": False,
+    "opencpn_path": r"C:\Program Files\OpenCPN\opencpn.exe",
     # AIS
     "ais_auto": False,
     "api_key": "",
-    "radio": 40,
+    "radius": 40,
     "out_host": "127.0.0.1",
     "out_port": 10111,
-    "excluir": "",
+    "exclude": "",
+    "max_age": 120,
+    "rf_hold": 5,
+    "net_tag": " (NET)",
     "test": False,
     # APRS
     "aprs_auto": False,
-    "indicativo": "N0CALL-8",
+    "callsign": "N0CALL-8",
     "passcode": "",
-    "servidor": "euro.aprs2.net",
-    "puerto": 14580,
-    "simbolo": "/Y",
-    "comentario": "OpenCPN AIS-APRS",
-    "int_movimiento": 5,
-    "int_parado": 30,
-    "giro": 30,
+    "server": "euro.aprs2.net",
+    "server_port": 14580,
+    "symbol": "/Y",
+    "comment": "OpenCPN AIS-APRS",
+    "int_moving": 5,
+    "int_stopped": 30,
+    "turn": 30,
+}
+
+# Setting names used by version 1.0 (Spanish), mapped to the current ones.
+_OLD_KEYS = {
+    "abrir_opencpn": "open_opencpn", "ruta_opencpn": "opencpn_path",
+    "radio": "radius", "excluir": "exclude", "indicativo": "callsign",
+    "servidor": "server", "puerto": "server_port", "simbolo": "symbol",
+    "comentario": "comment", "int_movimiento": "int_moving",
+    "int_parado": "int_stopped", "giro": "turn",
 }
 
 
-def cargar_config():
-    cfg = dict(POR_DEFECTO)
+def load_config():
+    cfg = dict(DEFAULTS)
     if os.path.exists(CONFIG):
-        fuentes = [CONFIG]
-    else:  # primera vez: aprovechar la configuración de las apps anteriores
-        fuentes = [os.path.join(CARPETA, "ais_opencpn_config.json"),
-                   os.path.join(CARPETA, "aprs_opencpn_config.json")]
-    for ruta in fuentes:
+        sources = [CONFIG]
+    else:  # first run: reuse the settings of the earlier separate apps
+        sources = [os.path.join(FOLDER, "ais_opencpn_config.json"),
+                   os.path.join(FOLDER, "aprs_opencpn_config.json")]
+    for path in sources:
         try:
-            with open(ruta, encoding="utf-8") as f:
-                datos = json.load(f)
+            with open(path, encoding="utf-8") as f:
+                data = json.load(f)
         except (OSError, ValueError):
             continue
-        if ruta.endswith("ais_opencpn_config.json"):
-            datos["ais_auto"] = datos.pop("autostart", False)
-        if ruta.endswith("aprs_opencpn_config.json"):
-            datos["aprs_auto"] = datos.pop("autostart", False)
-            datos.pop("gps_port", None)  # ahora el GPS es común
-        cfg.update({k: v for k, v in datos.items() if k in POR_DEFECTO})
+        if path.endswith("ais_opencpn_config.json"):
+            data["ais_auto"] = data.pop("autostart", False)
+        if path.endswith("aprs_opencpn_config.json"):
+            data["aprs_auto"] = data.pop("autostart", False)
+            data.pop("gps_port", None)  # the data port is now shared
+        for old, new in _OLD_KEYS.items():
+            if old in data and new not in data:
+                data[new] = data.pop(old)
+        cfg.update({k: v for k, v in data.items() if k in DEFAULTS})
     return cfg
 
 
-def guardar_config(cfg):
+def save_config(cfg):
     with open(CONFIG, "w", encoding="utf-8") as f:
         json.dump(cfg, f, indent=2, ensure_ascii=False)
 
 
 # --------------------------------------------------------------------------
-# APRS: utilidades
+# APRS helpers
 # --------------------------------------------------------------------------
 
-def passcode(indicativo):
-    c = indicativo.upper().split("-")[0]
+def passcode(callsign):
+    """Standard APRS-IS passcode for a callsign (SSID ignored)."""
+    c = callsign.upper().split("-")[0]
     h = 0x73E2
     for i in range(0, len(c), 2):
         h ^= ord(c[i]) << 8
@@ -108,578 +128,607 @@ def passcode(indicativo):
     return h & 0x7FFF
 
 
-def parse_rmc(linea):
-    """(lat, lon, velocidad_kn, rumbo) o None."""
-    try:
-        if not linea.startswith("$"):
-            return None
-        c = linea.split("*")[0].split(",")
-        if not c[0].endswith("RMC") or c[2] != "A":
-            return None
-        lat = int(c[3][:2]) + float(c[3][2:]) / 60
-        if c[4] == "S":
-            lat = -lat
-        lon = int(c[5][:3]) + float(c[5][3:]) / 60
-        if c[6] == "W":
-            lon = -lon
-        vel = float(c[7]) if c[7] else 0.0
-        rumbo = float(c[8]) if c[8] else None
-        return lat, lon, vel, rumbo
-    except (IndexError, ValueError):
-        return None
+def aprs_frame(cfg, lat, lon, sog, cog):
+    """Uncompressed APRS position packet, with course/speed when moving."""
+    table, sym = cfg["symbol"][0], cfg["symbol"][1]
 
-
-def trama_aprs(cfg, lat, lon, vel, rumbo):
-    tabla, sim = cfg["simbolo"][0], cfg["simbolo"][1]
-
-    def gm(valor):
-        cent = round(abs(valor) * 6000)
+    def dm(value):  # degrees and minutes (hundredths), never "60.00"
+        cent = round(abs(value) * 6000)
         return cent // 6000, (cent % 6000) / 100
 
-    g, mi = gm(lat)
-    lat_s = f"{g:02d}{mi:05.2f}{'N' if lat >= 0 else 'S'}"
-    g, mi = gm(lon)
-    lon_s = f"{g:03d}{mi:05.2f}{'E' if lon >= 0 else 'W'}"
+    d, m = dm(lat)
+    lat_s = f"{d:02d}{m:05.2f}{'N' if lat >= 0 else 'S'}"
+    d, m = dm(lon)
+    lon_s = f"{d:03d}{m:05.2f}{'E' if lon >= 0 else 'W'}"
     ext = ""
-    if vel is not None and vel >= 0.5:
-        cse = int(round(rumbo or 0)) % 360 or 360
-        ext = f"{cse:03d}/{min(int(round(vel)), 999):03d}"
-    cuerpo = f"!{lat_s}{tabla}{lon_s}{sim}{ext}{cfg['comentario'][:43]}"
-    return f"{cfg['indicativo'].upper()}>APRS,TCPIP*:{cuerpo}"
+    if sog is not None and sog >= 0.5:
+        cse = int(round(cog or 0)) % 360 or 360
+        ext = f"{cse:03d}/{min(int(round(sog)), 999):03d}"
+    body = f"!{lat_s}{table}{lon_s}{sym}{ext}{cfg['comment'][:43]}"
+    return f"{cfg['callsign'].upper()}>APRS,TCPIP*:{body}"
 
 
 # --------------------------------------------------------------------------
-# Motor en segundo plano: GPS común + servicios AIS y APRS
+# Background engine: shared OpenCPN input + AIS and APRS services
 # --------------------------------------------------------------------------
 
-class Posicion:
+class Position:
     def __init__(self):
-        self.lat = self.lon = self.vel = self.rumbo = None
+        self.lat = self.lon = self.sog = self.cog = None
         self.t = 0.0
 
-    def valida(self, max_edad=120):
-        return self.lat is not None and time.time() - self.t <= max_edad
+    def valid(self, max_age=120):
+        return self.lat is not None and time.time() - self.t <= max_age
 
 
-class Motor:
-    def __init__(self, cola):
-        self.cola = cola
-        self.pos = Posicion()
+class Engine:
+    def __init__(self, q):
+        self.q = q                       # messages to the window
+        self.pos = Position()
+        self.filter = None               # NetFilter of the running AIS service
         self.loop = asyncio.new_event_loop()
-        self.gps_transp = None
+        self.udp = None
         self.ais_fut = None
         self.aprs_fut = None
-        self.aprs_forzar = False
-        threading.Thread(target=self._hilo, daemon=True).start()
+        self.beacon_now = False
+        threading.Thread(target=self._thread, daemon=True).start()
 
-    def _hilo(self):
+    def _thread(self):
         asyncio.set_event_loop(self.loop)
         self.loop.run_forever()
 
-    # --- avisos a la ventana ---
-    def log(self, origen, t):
-        self.cola.put(("log", f"{time.strftime('%H:%M:%S')}  [{origen}] {t}"))
+    # ---- notifications to the window (thread-safe through the queue)
+    def log(self, source, text):
+        self.q.put(("log", f"{time.strftime('%H:%M:%S')}  [{source}] {text}"))
 
-    def estado(self, **kw):
-        self.cola.put(("estado", kw))
+    def status(self, **kw):
+        self.q.put(("status", kw))
 
-    def _lanzar(self, coro):
+    def _launch(self, coro):
         return asyncio.run_coroutine_threadsafe(coro, self.loop)
 
-    # --- GPS común ---
-    def abrir_gps(self, puerto):
-        self._lanzar(self._abrir_gps(int(puerto)))
+    # ---- shared input from OpenCPN (RMC position + VDM from the VHF)
+    def open_input(self, port):
+        self._launch(self._open_input(int(port)))
 
-    async def _abrir_gps(self, puerto):
-        if self.gps_transp:
-            self.gps_transp.close()
-            self.gps_transp = None
-        if not puerto:
-            self.estado(gps="sin GPS (puerto 0)")
+    async def _open_input(self, port):
+        if self.udp:
+            self.udp.close()
+            self.udp = None
+        if not port:
+            self.status(gps=t("st_gps_none"))
             return
-        motor = self
+        engine = self
 
-        class Gps(asyncio.DatagramProtocol):
+        class Input(asyncio.DatagramProtocol):
             def datagram_received(self, data, addr):
-                for linea in data.decode(errors="ignore").splitlines():
-                    p = parse_rmc(linea.strip())
-                    if p:
-                        if motor.pos.lat is None:
-                            motor.log("GPS", f"Recibido de OpenCPN: {p[0]:.4f}, {p[1]:.4f}")
-                        pos = motor.pos
-                        pos.lat, pos.lon, pos.vel, pos.rumbo = p
-                        pos.t = time.time()
-                        motor.estado(gps=f"{p[0]:.4f}, {p[1]:.4f}   {p[2]:.1f} kn   "
-                                         f"({time.strftime('%H:%M:%S')})")
+                for line in data.decode(errors="ignore").splitlines():
+                    engine._on_line(line.strip())
+
         try:
-            self.gps_transp, _ = await self.loop.create_datagram_endpoint(
-                Gps, local_addr=("0.0.0.0", puerto))
-            self.log("GPS", f"Escuchando posición de OpenCPN en UDP {puerto}")
-            self.estado(gps=f"esperando datos en UDP {puerto}…")
+            self.udp, _ = await self.loop.create_datagram_endpoint(
+                Input, local_addr=("0.0.0.0", port))
+            self.log("GPS", t("gps_listening", port=port))
+            self.status(gps=t("st_gps_waiting", port=port))
         except OSError as ex:
-            self.log("GPS", f"No puedo abrir el puerto {puerto}: {ex}")
-            self.estado(gps=f"ERROR puerto {puerto}")
+            self.log("GPS", t("gps_port_error", port=port, err=ex))
+            self.status(gps=t("st_gps_error", port=port))
 
-    # --- control de servicios (llamar desde la ventana) ---
-    def iniciar_ais(self, cfg):
-        if not self.ais_fut or self.ais_fut.done():
-            self.ais_fut = self._lanzar(self._ais(cfg))
+    def _on_line(self, line):
+        if "VDM," in line[:7]:
+            if self.filter and self.filter.feed_vdm(line):
+                self.log("AIS", t("ais_rf_first"))
+            return
+        p = ais.parse_rmc(line)
+        if not p:
+            return
+        if self.pos.lat is None:
+            self.log("GPS", t("gps_first_fix", lat=p[0], lon=p[1]))
+        self.pos.lat, self.pos.lon, self.pos.sog, self.pos.cog = p[:4]
+        self.pos.t = time.time()
+        if self.filter:
+            self.filter.set_gps_time(p[4])
+        self.status(gps=t("st_gps_value", lat=p[0], lon=p[1], sog=p[2],
+                          time=time.strftime("%H:%M:%S")))
 
-    def parar_ais(self):
+    # ---- service control (called from the window)
+    def start_ais(self, cfg):
+        if not self.ais_running():
+            self.ais_fut = self._launch(self._ais(cfg))
+
+    def stop_ais(self):
         if self.ais_fut:
             self.loop.call_soon_threadsafe(self.ais_fut.cancel)
 
-    def iniciar_aprs(self, cfg):
-        if not self.aprs_fut or self.aprs_fut.done():
-            self.aprs_forzar = False
-            self.aprs_fut = self._lanzar(self._aprs(cfg))
+    def start_aprs(self, cfg):
+        if not self.aprs_running():
+            self.beacon_now = False
+            self.aprs_fut = self._launch(self._aprs(cfg))
 
-    def parar_aprs(self):
+    def stop_aprs(self):
         if self.aprs_fut:
             self.loop.call_soon_threadsafe(self.aprs_fut.cancel)
 
-    def aprs_ya(self):
-        self.aprs_forzar = True
+    def request_beacon(self):
+        self.beacon_now = True
 
-    def ais_activo(self):
+    def ais_running(self):
         return bool(self.ais_fut and not self.ais_fut.done())
 
-    def aprs_activo(self):
+    def aprs_running(self):
         return bool(self.aprs_fut and not self.aprs_fut.done())
 
-    # --- servicio AIS ---
+    # ---- AIS service
     async def _ais(self, c):
         try:
             import websockets
         except ImportError:
-            self.log("AIS", "Falta la librería websockets (pip install websockets)")
-            self.estado(ais="Error: falta websockets")
-            self.cola.put(("fin", "ais"))
+            self.log("AIS", t("ais_no_websockets"))
+            self.status(ais=t("ais_no_websockets"))
+            self.q.put(("end", "ais"))
             return
-        salida = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        destino = (c["out_host"], int(c["out_port"]))
-        excluir = {int(x) for x in str(c["excluir"]).replace(",", " ").split() if x.isdigit()}
-        radio = float(c["radio"])
-        est = ais.Estado(float(c["lat"]), float(c["lon"]), radio)
-        prueba = None
+        out = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        dest = (c["out_host"], int(c["out_port"]))
+        exclude = {int(x) for x in str(c["exclude"]).replace(",", " ").split() if x.isdigit()}
+        self.filter = ais.NetFilter(float(c["max_age"]), float(c["rf_hold"]) * 60,
+                                    c["net_tag"], exclude)
+        radius = float(c["radius"])
+        lat, lon = float(c["lat"]), float(c["lon"])
+        test = None
         if c["test"]:
-            prueba = asyncio.create_task(self._ais_prueba(est, salida, destino))
-            self.log("AIS", "Enviando barco de prueba 'PRUEBA SCRIPT' 1 milla al norte")
-        espera = 5
+            test = asyncio.create_task(self._ais_test(out, dest, lat, lon))
+            self.log("AIS", t("ais_test"))
+        wait = 5
         try:
             while True:
-                if self.pos.valida():
-                    est.lat, est.lon = self.pos.lat, self.pos.lon
-                centro = (est.lat, est.lon)
+                if self.pos.valid():
+                    lat, lon = self.pos.lat, self.pos.lon
+                centre = (lat, lon)
                 sub = {"APIKey": c["api_key"].strip(),
-                       "BoundingBoxes": [ais.caja(*centro, radio)],
-                       "FilterMessageTypes": ais.TIPOS}
-                self.estado(ais="Conectando…")
+                       "BoundingBoxes": [ais.bbox(lat, lon, radius)],
+                       "FilterMessageTypes": ais.MESSAGE_TYPES}
+                self.status(ais=t("connecting"))
                 try:
                     async with websockets.connect(ais.AISSTREAM_URL, ping_interval=20,
                                                   open_timeout=60) as ws:
                         await ws.send(json.dumps(sub))
-                        self.estado(ais="Conectado")
-                        self.log("AIS", f"Conectado. Zona {radio:.0f} MN alrededor de "
-                                        f"{centro[0]:.4f}, {centro[1]:.4f}")
-                        espera = 5
-                        lector = asyncio.create_task(self._ais_leer(ws, salida, destino, excluir))
+                        self.status(ais=t("connected"))
+                        self.log("AIS", t("ais_connected", radius=radius,
+                                          lat=centre[0], lon=centre[1]))
+                        wait = 5
+                        reader = asyncio.create_task(self._ais_read(ws, out, dest))
                         try:
-                            while not lector.done():
-                                await asyncio.wait({lector}, timeout=5)
-                                if self.pos.valida() and ais.distancia_mn(
-                                        *centro, self.pos.lat, self.pos.lon) > radio / 3:
-                                    self.log("AIS", "El barco se ha movido: recentrando zona")
+                            while not reader.done():
+                                await asyncio.wait({reader}, timeout=5)
+                                if self.pos.valid() and ais.distance_nm(
+                                        *centre, self.pos.lat, self.pos.lon) > radius / 3:
+                                    self.log("AIS", t("ais_moved"))
                                     break
-                            if lector.done():
-                                if lector.exception():
-                                    raise lector.exception()
-                                self.log("AIS", "aisstream ha cerrado la conexión")
+                            if reader.done():
+                                if reader.exception():
+                                    raise reader.exception()
+                                self.log("AIS", t("ais_closed"))
                             else:
                                 continue
                         finally:
-                            lector.cancel()
+                            reader.cancel()
                 except asyncio.CancelledError:
                     raise
                 except Exception as ex:
-                    self.log("AIS", f"Conexión perdida ({ex}). Reintento en {espera} s")
-                self.estado(ais="Reconectando…")
-                await asyncio.sleep(espera)
-                espera = min(espera * 2, 120)
+                    self.log("AIS", t("conn_lost", err=ex, s=wait))
+                self.status(ais=t("reconnecting"))
+                await asyncio.sleep(wait)
+                wait = min(wait * 2, 120)
         except asyncio.CancelledError:
             pass
         finally:
-            if prueba:
-                prueba.cancel()
-            salida.close()
-            self.log("AIS", "Parado")
-            self.estado(ais="Parado", trafico="—")
-            self.cola.put(("fin", "ais"))
+            if test:
+                test.cancel()
+            out.close()
+            self.filter = None
+            self.log("AIS", t("stopped"))
+            self.status(ais=t("stopped"), traffic="—")
+            self.q.put(("end", "ais"))
 
-    async def _ais_prueba(self, est, salida, destino):
+    async def _ais_test(self, out, dest, lat, lon):
         while True:
-            if self.pos.valida():
-                est.lat, est.lon = self.pos.lat, self.pos.lon
-            m = {"Latitude": est.lat + 1 / 60, "Longitude": est.lon, "Sog": 0, "Cog": 0,
-                 "TrueHeading": 0, "NavigationalStatus": 1, "Timestamp": int(time.time()) % 60}
-            frases = ais.nmea(ais.enc_tipo1(999000001, m))
-            frases += ais.nmea(ais.enc_tipo5(999000001, {"Name": "PRUEBA SCRIPT", "Type": 37}))
-            for f in frases:
-                salida.sendto((f + "\r\n").encode(), destino)
+            if self.pos.valid():
+                lat, lon = self.pos.lat, self.pos.lon
+            for s in ais.test_vessel_sentences(lat, lon):
+                out.sendto((s + "\r\n").encode(), dest)
             await asyncio.sleep(10)
 
-    async def _ais_leer(self, ws, salida, destino, excluir):
-        n, barcos, t0 = 0, set(), time.time()
+    async def _ais_read(self, ws, out, dest):
+        t0 = time.time()
         async for raw in ws:
             msg = json.loads(raw)
             if "error" in msg:
-                self.log("AIS", f"Error de aisstream: {msg['error']}")
+                self.log("AIS", t("ais_error", err=msg["error"]))
                 return
-            mmsi = (msg.get("MetaData") or {}).get("MMSI")
-            if mmsi in excluir:
-                continue
-            for frase in ais.convertir(msg):
-                salida.sendto((frase + "\r\n").encode(), destino)
-                n += 1
-            barcos.add(mmsi)
+            for s in self.filter.process(msg):
+                out.sendto((s + "\r\n").encode(), dest)
             if time.time() - t0 > 60:
-                self.estado(trafico=f"{len(barcos)} barcos, {n} sentencias (último minuto)")
-                n, barcos, t0 = 0, set(), time.time()
+                st = self.filter.take_stats()
+                self.status(traffic=t("ais_minute", vessels=st["vessels"], sent=st["sent"],
+                                      old=st["old"], rf=st["rf"]))
+                t0 = time.time()
 
-    # --- servicio APRS ---
+    # ---- APRS service
     async def _aprs(self, c):
-        espera = 5
+        wait = 5
         try:
             while True:
                 try:
-                    await self._aprs_sesion(c)
-                    espera = 5
+                    await self._aprs_session(c)
+                    wait = 5
                 except asyncio.CancelledError:
                     raise
                 except Exception as ex:
-                    self.log("APRS", f"Conexión perdida ({ex}). Reintento en {espera} s")
-                self.estado(aprs="Reconectando…")
-                await asyncio.sleep(espera)
-                espera = min(espera * 2, 120)
+                    self.log("APRS", t("conn_lost", err=ex, s=wait))
+                self.status(aprs=t("reconnecting"))
+                await asyncio.sleep(wait)
+                wait = min(wait * 2, 120)
         except asyncio.CancelledError:
             pass
         finally:
-            self.log("APRS", "Parado")
-            self.estado(aprs="Parado")
-            self.cola.put(("fin", "aprs"))
+            self.log("APRS", t("stopped"))
+            self.status(aprs=t("stopped"))
+            self.q.put(("end", "aprs"))
 
-    async def _aprs_sesion(self, c):
-        self.estado(aprs="Conectando…")
+    async def _aprs_session(self, c):
+        self.status(aprs=t("connecting"))
         r, w = await asyncio.wait_for(
-            asyncio.open_connection(c["servidor"], int(c["puerto"])), 30)
-        ultima = None  # (hora, rumbo)
+            asyncio.open_connection(c["server"], int(c["server_port"])), 30)
+        last = None  # (time, course) of the last beacon
         try:
-            w.write(f"user {c['indicativo'].upper()} pass {c['passcode']} "
-                    f"vers {VERSION_APRS}\r\n".encode())
+            w.write(f"user {c['callsign'].upper()} pass {c['passcode']} "
+                    f"vers {APRS_VERSION}\r\n".encode())
             await w.drain()
 
-            async def leer():
+            async def reader():
                 while True:
-                    linea = await asyncio.wait_for(r.readline(), 120)
-                    if not linea:
-                        raise ConnectionError("el servidor cerró la conexión")
-                    t = linea.decode(errors="ignore").strip()
-                    if t.startswith("# logresp"):
-                        ok = " verified" in t
-                        self.log("APRS", t[2:])
-                        self.estado(aprs=f"Conectado a {c['servidor']}"
-                                    + ("" if ok else " (SIN VERIFICAR: revisa el passcode)"))
+                    line = await asyncio.wait_for(r.readline(), 120)
+                    if not line:
+                        raise ConnectionError(t("aprs_server_closed"))
+                    text = line.decode(errors="ignore").strip()
+                    if text.startswith("# logresp"):
+                        ok = " verified" in text
+                        self.log("APRS", text[2:])
+                        self.status(aprs=t("aprs_connected_to", server=c["server"])
+                                    + ("" if ok else t("aprs_unverified")))
 
-            lector = asyncio.create_task(leer())
+            rd = asyncio.create_task(reader())
             try:
                 while True:
-                    await asyncio.wait({lector}, timeout=5)
-                    if lector.done():
-                        lector.result()
-                    if self._aprs_toca(c, ultima):
+                    await asyncio.wait({rd}, timeout=5)
+                    if rd.done():
+                        rd.result()  # re-raise the error
+                    if self._beacon_due(c, last):
                         p = self.pos
-                        trama = trama_aprs(c, p.lat, p.lon, p.vel, p.rumbo)
-                        w.write((trama + "\r\n").encode())
+                        frame = aprs_frame(c, p.lat, p.lon, p.sog, p.cog)
+                        w.write((frame + "\r\n").encode())
                         await w.drain()
-                        ultima = (time.time(), p.rumbo)
-                        self.aprs_forzar = False
-                        self.log("APRS", f"Enviado: {trama}")
-                        self.estado(baliza=time.strftime("%H:%M:%S"))
+                        last = (time.time(), p.cog)
+                        self.beacon_now = False
+                        self.log("APRS", t("aprs_sent", frame=frame))
+                        self.status(beacon=time.strftime("%H:%M:%S"))
             finally:
-                lector.cancel()
+                rd.cancel()
         finally:
             w.close()
 
-    def _aprs_toca(self, c, ultima):
+    def _beacon_due(self, c, last):
         p = self.pos
-        if not p.valida():
-            return False
-        if self.aprs_forzar or ultima is None:
+        if not p.valid():
+            return False                 # no recent GPS: never send an old position
+        if self.beacon_now or last is None:
             return True
-        dt = time.time() - ultima[0]
-        navegando = (p.vel or 0) >= 1.0
-        if navegando and dt >= float(c["int_movimiento"]) * 60:
+        elapsed = time.time() - last[0]
+        moving = (p.sog or 0) >= 1.0
+        if moving and elapsed >= float(c["int_moving"]) * 60:
             return True
-        if not navegando and dt >= float(c["int_parado"]) * 60:
+        if not moving and elapsed >= float(c["int_stopped"]) * 60:
             return True
-        if navegando and dt >= 60 and p.rumbo is not None and ultima[1] is not None:
-            giro = abs((p.rumbo - ultima[1] + 180) % 360 - 180)
-            if giro >= float(c["giro"]):
+        if moving and elapsed >= 60 and p.cog is not None and last[1] is not None:
+            turn = abs((p.cog - last[1] + 180) % 360 - 180)
+            if turn >= float(c["turn"]):
                 return True
         return False
 
 
 # --------------------------------------------------------------------------
-# Ventana
+# Window
 # --------------------------------------------------------------------------
+
+STATUS_ROWS = [("gps", "st_gps"), ("ais", "st_ais"), ("traffic", "st_traffic"),
+               ("aprs", "st_aprs"), ("beacon", "st_beacon")]
+
 
 class App(tk.Tk):
     def __init__(self):
         super().__init__()
-        self.title("AIS + APRS para OpenCPN")
         self.resizable(False, False)
-        self.cfg = cargar_config()
-        self.cola = queue.Queue()
-        self.motor = Motor(self.cola)
+        self.cfg = load_config()
+        set_language(self.cfg["language"])
+        self.q = queue.Queue()
+        self.engine = Engine(self.q)
+        self.log_lines = []
+        self.s = {k: tk.StringVar(value="—") for k, _ in STATUS_ROWS}
+        self.s["ais"].set(t("stopped"))
+        self.s["aprs"].set(t("stopped"))
+        self.build()
+
+        self.protocol("WM_DELETE_WINDOW", self.on_close)
+        self.after(300, self.poll_queue)
+        self.engine.open_input(self.cfg["gps_port"])
+        if self.cfg.get("open_opencpn"):
+            self.open_opencpn()
+        if self.cfg.get("ais_auto") and self.cfg.get("api_key"):
+            self.after(500, self.toggle_ais)
+        if self.cfg.get("aprs_auto") and self.cfg.get("passcode"):
+            self.after(700, self.toggle_aprs)
+
+    # ---- building the interface (rebuilt when the language changes)
+    def build(self):
+        for child in self.winfo_children():
+            child.destroy()
+        self.title(t("app_title"))
         self.v = {}
 
         nb = ttk.Notebook(self)
         nb.grid(padx=8, pady=8)
-        t_est = ttk.Frame(nb, padding=10)
-        t_ais = ttk.Frame(nb, padding=10)
-        t_aprs = ttk.Frame(nb, padding=10)
-        t_gen = ttk.Frame(nb, padding=10)
-        nb.add(t_est, text="Estado")
-        nb.add(t_ais, text="AIS")
-        nb.add(t_aprs, text="APRS")
-        nb.add(t_gen, text="General")
+        tabs = {}
+        for key in ("tab_status", "tab_ais", "tab_aprs", "tab_general"):
+            tabs[key] = ttk.Frame(nb, padding=10)
+            nb.add(tabs[key], text=t(key))
 
-        # ---- pestaña Estado ----
-        self.s = {}
-        filas = [("gps", "Posición GPS", "—"), ("ais", "AIS (aisstream.io)", "Parado"),
-                 ("trafico", "Tráfico AIS", "—"), ("aprs", "APRS-IS", "Parado"),
-                 ("baliza", "Última baliza APRS", "—")]
-        cuadro = ttk.Frame(t_est)
-        cuadro.grid(row=0, column=0, sticky="w")
-        for i, (k, etq, ini) in enumerate(filas):
-            ttk.Label(cuadro, text=etq + ":").grid(row=i, column=0, sticky="w", padx=(0, 8))
-            self.s[k] = tk.StringVar(value=ini)
-            ttk.Label(cuadro, textvariable=self.s[k]).grid(row=i, column=1, sticky="w")
-
-        bot = ttk.Frame(t_est, padding=(0, 8))
-        bot.grid(row=1, column=0, sticky="w")
-        self.b_ais = ttk.Button(bot, text="▶ Iniciar AIS", width=16, command=self.alternar_ais)
+        # Status tab
+        tab = tabs["tab_status"]
+        grid = ttk.Frame(tab)
+        grid.grid(row=0, column=0, sticky="w")
+        for i, (k, label) in enumerate(STATUS_ROWS):
+            ttk.Label(grid, text=t(label) + ":").grid(row=i, column=0, sticky="w", padx=(0, 8))
+            ttk.Label(grid, textvariable=self.s[k]).grid(row=i, column=1, sticky="w")
+        bar = ttk.Frame(tab, padding=(0, 8))
+        bar.grid(row=1, column=0, sticky="w")
+        self.b_ais = ttk.Button(bar, width=16, command=self.toggle_ais)
         self.b_ais.pack(side="left")
-        self.b_aprs = ttk.Button(bot, text="▶ Iniciar APRS", width=16, command=self.alternar_aprs)
+        self.b_aprs = ttk.Button(bar, width=16, command=self.toggle_aprs)
         self.b_aprs.pack(side="left", padx=4)
-        self.b_ya = ttk.Button(bot, text="Enviar posición ahora", command=self.aprs_ya,
-                               state="disabled")
-        self.b_ya.pack(side="left")
-        ttk.Button(bot, text="Abrir OpenCPN", command=self.abrir_opencpn).pack(side="left", padx=4)
-        ttk.Button(bot, text="Minimizar", command=self.iconify).pack(side="left")
-
-        self.txt = tk.Text(t_est, width=86, height=14, state="disabled", font=("Consolas", 9))
+        self.b_now = ttk.Button(bar, text=t("btn_beacon_now"), command=self.beacon_now)
+        self.b_now.pack(side="left")
+        ttk.Button(bar, text=t("btn_open_opencpn"), command=self.open_opencpn).pack(side="left", padx=4)
+        ttk.Button(bar, text=t("btn_minimize"), command=self.iconify).pack(side="left")
+        self.txt = tk.Text(tab, width=96, height=14, state="disabled", font=("Consolas", 9))
         self.txt.grid(row=2, column=0)
+        self._refill_log()
+        self._refresh_buttons()
 
-        # ---- pestaña AIS ----
-        self._campos(t_ais, [
-            ("API key aisstream.io", "api_key", 44, "clave"),
-            ("Radio de la zona (millas)", "radio", 8, None),
-            ("Enviar AIS a (IP)", "out_host", 16, None),
-            ("Puerto AIS → OpenCPN (UDP)", "out_port", 8, None),
-            ("MMSI a ignorar (el propio)", "excluir", 24, None),
-        ], [("test", "Barco de prueba 'PRUEBA SCRIPT' 1 milla al norte"),
-            ("ais_auto", "Iniciar AIS automáticamente al abrir")])
+        # AIS tab
+        row = self._fields(tabs["tab_ais"], [
+            ("f_api_key", "api_key", 44, "secret"),
+            ("f_radius", "radius", 8, None),
+            ("f_out_host", "out_host", 16, None),
+            ("f_out_port", "out_port", 8, None),
+            ("f_exclude", "exclude", 24, None),
+            ("f_max_age", "max_age", 8, None),
+            ("f_rf_hold", "rf_hold", 8, None),
+            ("f_net_tag", "net_tag", 10, None),
+        ], [("test", "c_test"), ("ais_auto", "c_ais_auto")])
+        ttk.Label(tabs["tab_ais"], text=t("ais_hint"), foreground="gray").grid(
+            row=row, column=0, columnspan=3, sticky="w", pady=(8, 0))
 
-        # ---- pestaña APRS ----
-        fila = self._campos(t_aprs, [
-            ("Indicativo con SSID", "indicativo", 14, "passcode_btn"),
-            ("Passcode APRS-IS", "passcode", 10, None),
-            ("Servidor APRS-IS", "servidor", 24, None),
-            ("Puerto servidor", "puerto", 8, None),
-            ("Símbolo (/Y velero, /s barco)", "simbolo", 6, None),
-            ("Comentario", "comentario", 40, None),
-            ("Baliza navegando cada (min)", "int_movimiento", 6, None),
-            ("Baliza parado cada (min)", "int_parado", 6, None),
-            ("Baliza extra si cambia el rumbo (°)", "giro", 6, None),
-        ], [("aprs_auto", "Iniciar APRS automáticamente al abrir")])
+        # APRS tab
+        row = self._fields(tabs["tab_aprs"], [
+            ("f_callsign", "callsign", 14, "passcode"),
+            ("f_passcode", "passcode", 10, None),
+            ("f_server", "server", 24, None),
+            ("f_server_port", "server_port", 8, None),
+            ("f_symbol", "symbol", 6, None),
+            ("f_comment", "comment", 40, None),
+            ("f_int_moving", "int_moving", 6, None),
+            ("f_int_stopped", "int_stopped", 6, None),
+            ("f_turn", "turn", 6, None),
+        ], [("aprs_auto", "c_aprs_auto")])
+        ttk.Label(tabs["tab_aprs"], text=t("aprs_hint"), foreground="gray").grid(
+            row=row, column=0, columnspan=3, sticky="w", pady=(8, 0))
 
-        # ---- pestaña General ----
-        fila = self._campos(t_gen, [
-            ("Puerto GPS ← OpenCPN (UDP, RMC)", "gps_port", 8, None),
-            ("Latitud inicial (sin GPS)", "lat", 12, None),
-            ("Longitud inicial (sin GPS)", "lon", 12, None),
-            ("Ruta de OpenCPN", "ruta_opencpn", 44, "buscar"),
-        ], [("abrir_opencpn", "Abrir OpenCPN al abrir esta app")])
-        ttk.Label(t_gen, text="El mismo puerto GPS sirve para el AIS y el APRS.\n"
-                              "En OpenCPN: salida de red UDP 127.0.0.1 a este puerto, filtro RMC.",
-                  foreground="gray").grid(row=fila, column=0, columnspan=3, sticky="w", pady=(8, 0))
+        # General tab
+        gen = tabs["tab_general"]
+        ttk.Label(gen, text=t("f_language")).grid(row=0, column=0, sticky="w", pady=1)
+        self.lang_names = {"auto": t("lang_auto"), **LANGUAGES}
+        self.lang_var = tk.StringVar(value=self.lang_names.get(self.cfg["language"], t("lang_auto")))
+        combo = ttk.Combobox(gen, textvariable=self.lang_var, state="readonly", width=14,
+                             values=list(self.lang_names.values()))
+        combo.grid(row=0, column=1, sticky="w", pady=1)
+        combo.bind("<<ComboboxSelected>>", self.on_language)
+        row = self._fields(gen, [
+            ("f_gps_port", "gps_port", 8, None),
+            ("f_lat", "lat", 12, None),
+            ("f_lon", "lon", 12, None),
+            ("f_opencpn_path", "opencpn_path", 44, "browse"),
+        ], [("open_opencpn", "c_open_opencpn")], start=1)
+        ttk.Label(gen, text=t("general_hint"), foreground="gray").grid(
+            row=row, column=0, columnspan=3, sticky="w", pady=(8, 0))
 
-        abajo = ttk.Frame(self, padding=(8, 0, 8, 8))
-        abajo.grid(row=1, column=0, sticky="ew")
-        ttk.Button(abajo, text="Guardar configuración", command=self.guardar).pack(side="left")
-        ttk.Label(abajo, text="(los cambios se aplican al reiniciar cada servicio)",
-                  foreground="gray").pack(side="left", padx=6)
+        bottom = ttk.Frame(self, padding=(8, 0, 8, 8))
+        bottom.grid(row=1, column=0, sticky="ew")
+        ttk.Button(bottom, text=t("btn_save"), command=self.save).pack(side="left")
+        ttk.Label(bottom, text=t("save_hint"), foreground="gray").pack(side="left", padx=6)
 
-        self.protocol("WM_DELETE_WINDOW", self.cerrar)
-        self.after(300, self.revisar_cola)
+    def _fields(self, parent, fields, checks, start=0):
+        row = start
+        for label, key, width, extra in fields:
+            ttk.Label(parent, text=t(label)).grid(row=row, column=0, sticky="w", pady=1)
+            var = tk.StringVar(value=str(self.cfg[key]))
+            entry = ttk.Entry(parent, textvariable=var, width=width,
+                              show="•" if extra == "secret" else "")
+            entry.grid(row=row, column=1, sticky="w", pady=1)
+            self.v[key] = var
+            if extra == "secret":
+                show = tk.BooleanVar(value=False)
+                ttk.Checkbutton(parent, text=t("show"), variable=show,
+                                command=lambda e=entry, b=show: e.config(show="" if b.get() else "•")
+                                ).grid(row=row, column=2, sticky="w")
+            elif extra == "passcode":
+                ttk.Button(parent, text=t("btn_calc_passcode"), command=self.calc_passcode
+                           ).grid(row=row, column=2, sticky="w", padx=4)
+            elif extra == "browse":
+                ttk.Button(parent, text="…", width=3, command=self.browse_opencpn
+                           ).grid(row=row, column=2, sticky="w")
+            row += 1
+        for key, label in checks:
+            var = tk.BooleanVar(value=bool(self.cfg[key]))
+            ttk.Checkbutton(parent, text=t(label), variable=var).grid(
+                row=row, column=0, columnspan=3, sticky="w")
+            self.v[key] = var
+            row += 1
+        return row
 
-        self.motor.abrir_gps(self.cfg["gps_port"])
-        if self.cfg.get("abrir_opencpn"):
-            self.abrir_opencpn()
-        if self.cfg.get("ais_auto") and self.cfg.get("api_key"):
-            self.after(500, self.alternar_ais)
-        if self.cfg.get("aprs_auto") and self.cfg.get("passcode"):
-            self.after(700, self.alternar_aprs)
-
-    def _campos(self, padre, campos, casillas):
-        fila = 0
-        for etq, clave, ancho, extra in campos:
-            ttk.Label(padre, text=etq).grid(row=fila, column=0, sticky="w", pady=1)
-            var = tk.StringVar(value=str(self.cfg[clave]))
-            ent = ttk.Entry(padre, textvariable=var, width=ancho,
-                            show="•" if extra == "clave" else "")
-            ent.grid(row=fila, column=1, sticky="w", pady=1)
-            self.v[clave] = var
-            if extra == "clave":
-                ver = tk.BooleanVar(value=False)
-                ttk.Checkbutton(padre, text="ver", variable=ver,
-                                command=lambda e=ent, b=ver: e.config(show="" if b.get() else "•")
-                                ).grid(row=fila, column=2, sticky="w")
-            elif extra == "passcode_btn":
-                ttk.Button(padre, text="Calcular passcode", command=self.calcular_passcode
-                           ).grid(row=fila, column=2, sticky="w", padx=4)
-            elif extra == "buscar":
-                ttk.Button(padre, text="…", width=3, command=self.buscar_opencpn
-                           ).grid(row=fila, column=2, sticky="w")
-            fila += 1
-        for clave, texto in casillas:
-            var = tk.BooleanVar(value=bool(self.cfg[clave]))
-            ttk.Checkbutton(padre, text=texto, variable=var).grid(
-                row=fila, column=0, columnspan=3, sticky="w")
-            self.v[clave] = var
-            fila += 1
-        return fila
-
-    # --- configuración ---
-    def leer(self):
-        cfg = {k: v.get() for k, v in self.v.items()}
-        cfg["indicativo"] = cfg["indicativo"].strip().upper()
-        cfg["simbolo"] = (cfg["simbolo"].strip() + "  ")[:2]
+    def on_language(self, _event=None):
+        name = self.lang_var.get()
+        code = next((k for k, v in self.lang_names.items() if v == name), "auto")
+        # keep what has been typed but not saved yet
+        self.cfg.update({k: v.get() for k, v in self.v.items()})
+        self.cfg["language"] = code
+        set_language(code)
         try:
-            for k in ("lat", "lon", "radio", "int_movimiento", "int_parado", "giro"):
+            save_config(self.read() or self.cfg)
+        except OSError:
+            pass
+        self.build()
+
+    # ---- settings
+    def read(self):
+        cfg = {k: v.get() for k, v in self.v.items()}
+        cfg["language"] = self.cfg.get("language", "auto")
+        cfg["callsign"] = cfg["callsign"].strip().upper()
+        cfg["symbol"] = (cfg["symbol"].strip() + "  ")[:2]
+        try:
+            for k in ("lat", "lon", "radius", "int_moving", "int_stopped", "turn",
+                      "max_age", "rf_hold"):
                 cfg[k] = float(str(cfg[k]).replace(",", "."))
-            for k in ("gps_port", "out_port", "puerto"):
+            for k in ("gps_port", "out_port", "server_port"):
                 cfg[k] = int(cfg[k])
         except ValueError:
-            messagebox.showerror("Error", "Revisa los campos numéricos (posición, radio, "
-                                          "puertos, intervalos).")
+            messagebox.showerror(t("err_title"), t("err_numbers"))
             return None
-        if cfg["int_movimiento"] < 1 or cfg["int_parado"] < 5:
-            messagebox.showerror("Error", "APRS: mínimo 1 min navegando y 5 min parado.")
+        if cfg["int_moving"] < 1 or cfg["int_stopped"] < 5:
+            messagebox.showerror(t("err_title"), t("err_aprs_min"))
             return None
         return cfg
 
-    def guardar(self):
-        cfg = self.leer()
+    def save(self):
+        cfg = self.read()
         if not cfg:
             return None
-        if cfg["gps_port"] != self.cfg["gps_port"]:
-            self.motor.abrir_gps(cfg["gps_port"])
+        if cfg["gps_port"] != self.cfg.get("gps_port"):
+            self.engine.open_input(cfg["gps_port"])
         self.cfg = cfg
-        guardar_config(cfg)
-        self.log("Configuración guardada")
+        save_config(cfg)
+        self.log(t("settings_saved"))
         return cfg
 
-    def calcular_passcode(self):
-        ind = self.v["indicativo"].get().strip()
-        if ind:
-            self.v["passcode"].set(str(passcode(ind)))
+    def calc_passcode(self):
+        call = self.v["callsign"].get().strip()
+        if call:
+            self.v["passcode"].set(str(passcode(call)))
 
-    def buscar_opencpn(self):
-        ruta = filedialog.askopenfilename(title="Selecciona opencpn.exe",
-                                          filetypes=[("Programa", "*.exe"), ("Todos", "*.*")])
-        if ruta:
-            self.v["ruta_opencpn"].set(ruta)
+    def browse_opencpn(self):
+        path = filedialog.askopenfilename(title=t("select_opencpn"),
+                                          filetypes=[(t("program"), "*.exe"), (t("all_files"), "*.*")])
+        if path:
+            self.v["opencpn_path"].set(path)
 
-    def abrir_opencpn(self):
-        ruta = self.v["ruta_opencpn"].get()
+    def open_opencpn(self):
+        path = self.v["opencpn_path"].get() if hasattr(self, "v") else self.cfg["opencpn_path"]
         try:
-            subprocess.Popen([ruta], cwd=os.path.dirname(ruta) or None)
-            self.log("Abriendo OpenCPN")
+            subprocess.Popen([path], cwd=os.path.dirname(path) or None)
+            self.log(t("opening_opencpn"))
         except OSError as ex:
-            self.log(f"No se pudo abrir OpenCPN ({ex}). Revisa la ruta en General.")
+            self.log(t("opencpn_error", err=ex))
 
-    # --- servicios ---
-    def alternar_ais(self):
-        if self.motor.ais_activo():
-            self.motor.parar_ais()
+    # ---- services
+    def _refresh_buttons(self):
+        self.b_ais.config(text=t("btn_stop_ais") if self.engine.ais_running() else t("btn_start_ais"),
+                          state="normal")
+        self.b_aprs.config(text=t("btn_stop_aprs") if self.engine.aprs_running() else t("btn_start_aprs"),
+                           state="normal")
+        self.b_now.config(state="normal" if self.engine.aprs_running() else "disabled")
+
+    def toggle_ais(self):
+        if self.engine.ais_running():
+            self.engine.stop_ais()
             self.b_ais.config(state="disabled")
             return
-        cfg = self.guardar()
+        cfg = self.save()
         if not cfg:
             return
         if not cfg["api_key"].strip():
-            messagebox.showwarning("Falta la API key", "Introdúcela en la pestaña AIS.")
+            messagebox.showwarning(t("missing_key_title"), t("missing_key"))
             return
-        self.motor.iniciar_ais(cfg)
-        self.b_ais.config(text="■ Parar AIS")
+        self.engine.start_ais(cfg)
+        self.b_ais.config(text=t("btn_stop_ais"))
 
-    def alternar_aprs(self):
-        if self.motor.aprs_activo():
-            self.motor.parar_aprs()
+    def toggle_aprs(self):
+        if self.engine.aprs_running():
+            self.engine.stop_aprs()
             self.b_aprs.config(state="disabled")
             return
-        cfg = self.guardar()
+        cfg = self.save()
         if not cfg:
             return
         if not str(cfg["passcode"]).strip():
-            messagebox.showwarning("Falta el passcode", "Rellénalo en la pestaña APRS.")
+            messagebox.showwarning(t("missing_pass_title"), t("missing_pass"))
             return
-        self.motor.iniciar_aprs(cfg)
-        self.b_aprs.config(text="■ Parar APRS")
-        self.b_ya.config(state="normal")
+        self.engine.start_aprs(cfg)
+        self.b_aprs.config(text=t("btn_stop_aprs"))
+        self.b_now.config(state="normal")
 
-    def aprs_ya(self):
-        self.motor.aprs_ya()
-        self.log("Baliza APRS solicitada (se envía en unos segundos si hay GPS)")
+    def beacon_now(self):
+        self.engine.request_beacon()
+        self.log(t("aprs_beacon_requested"))
 
-    # --- ventana ---
-    def log(self, t):
-        if not t[:2].isdigit():
-            t = f"{time.strftime('%H:%M:%S')}  {t}"
+    # ---- log and queue
+    def log(self, text):
+        if not text[:2].isdigit():
+            text = f"{time.strftime('%H:%M:%S')}  {text}"
+        self.log_lines = (self.log_lines + [text])[-400:]
         self.txt.config(state="normal")
-        self.txt.insert("end", t + "\n")
+        self.txt.insert("end", text + "\n")
         n = int(self.txt.index("end-1c").split(".")[0])
         if n > 400:
             self.txt.delete("1.0", f"{n - 400}.0")
         self.txt.see("end")
         self.txt.config(state="disabled")
 
-    def revisar_cola(self):
+    def _refill_log(self):
+        self.txt.config(state="normal")
+        self.txt.insert("end", "".join(line + "\n" for line in self.log_lines))
+        self.txt.see("end")
+        self.txt.config(state="disabled")
+
+    def poll_queue(self):
         try:
             while True:
-                tipo, dato = self.cola.get_nowait()
-                if tipo == "log":
-                    self.log(dato)
-                elif tipo == "estado":
-                    for k, val in dato.items():
+                kind, data = self.q.get_nowait()
+                if kind == "log":
+                    self.log(data)
+                elif kind == "status":
+                    for k, val in data.items():
                         self.s[k].set(val)
-                elif tipo == "fin" and dato == "ais":
-                    self.b_ais.config(text="▶ Iniciar AIS", state="normal")
-                elif tipo == "fin" and dato == "aprs":
-                    self.b_aprs.config(text="▶ Iniciar APRS", state="normal")
-                    self.b_ya.config(state="disabled")
+                elif kind == "end":
+                    self._refresh_buttons()
         except queue.Empty:
             pass
-        self.after(300, self.revisar_cola)
+        self.after(300, self.poll_queue)
 
-    def cerrar(self):
-        if (self.motor.ais_activo() or self.motor.aprs_activo()) and not messagebox.askyesno(
-                "Salir", "Hay servicios funcionando. ¿Parar y salir?"):
+    def on_close(self):
+        if (self.engine.ais_running() or self.engine.aprs_running()) and not messagebox.askyesno(
+                t("quit_title"), t("quit_question")):
             return
-        self.motor.parar_ais()
-        self.motor.parar_aprs()
+        self.engine.stop_ais()
+        self.engine.stop_aprs()
         self.after(500, self.destroy)
 
 
