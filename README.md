@@ -78,3 +78,7 @@ Opciones útiles: `--diag` (muestra cada barco recibido y su distancia), `--test
 ## Tipos AIS soportados
 
 1, 2 y 3 (posición clase A), 5 (datos estáticos clase A), 18 y 19 (posición clase B) y 24 (datos estáticos clase B). El codificador AIS está implementado sin dependencias externas.
+
+## Licencia
+
+Copyright (C) 2026 EA7KE. Distribuido bajo la [GNU General Public License v2.0 o posterior](LICENSE) (GPL-2.0-or-later), la misma familia de licencia que OpenCPN.

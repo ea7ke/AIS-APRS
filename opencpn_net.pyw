@@ -1,4 +1,9 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-2.0-or-later
+# Copyright (C) 2026 EA7KE
+# Este programa es software libre: puede redistribuirlo y/o modificarlo bajo
+# los términos de la Licencia Pública General GNU, versión 2 o (a su elección)
+# cualquier versión posterior. Se distribuye SIN NINGUNA GARANTÍA. Ver LICENSE.
 """
 AIS + APRS para OpenCPN
 =======================
