@@ -36,6 +36,7 @@ import datetime as dt
 import json
 import math
 import socket
+import ssl
 import time
 
 from i18n import t, set_language
@@ -478,6 +479,22 @@ class NetFilter:
         return s
 
 
+
+def ssl_context():
+    """TLS context for aisstream: full certificate verification, but without
+    the extra X.509 strictness enabled by default since Python 3.13.
+
+    Antivirus HTTPS scanning, mobile operators or other network middleboxes
+    often present a CA certificate without an Authority Key Identifier, which
+    Python 3.13+ rejects ("Missing Authority Key Identifier"). The chain and
+    host name are still fully verified against the system trust store.
+    """
+    ctx = ssl.create_default_context()
+    if hasattr(ssl, "VERIFY_X509_STRICT"):
+        ctx.verify_flags &= ~ssl.VERIFY_X509_STRICT
+    return ctx
+
+
 # --------------------------------------------------------------------------
 # Geometry
 # --------------------------------------------------------------------------
@@ -561,7 +578,7 @@ async def _run(args):
         sub = {"APIKey": args.key, "BoundingBoxes": [bbox(st.sub_lat, st.sub_lon, st.radius)],
                "FilterMessageTypes": MESSAGE_TYPES}
         try:
-            async with websockets.connect(AISSTREAM_URL, ping_interval=20,
+            async with websockets.connect(AISSTREAM_URL, ping_interval=20, ssl=ssl_context(),
                                           open_timeout=args.timeout) as ws:
                 await ws.send(json.dumps(sub))  # must be sent within 3 s
                 print(t("ais_connected", radius=st.radius, lat=st.sub_lat, lon=st.sub_lon))

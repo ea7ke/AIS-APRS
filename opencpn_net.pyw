@@ -39,7 +39,7 @@ import aisstream_opencpn as ais  # noqa: E402
 from i18n import t, set_language, LANGUAGES  # noqa: E402
 
 CONFIG = os.path.join(FOLDER, "opencpn_net_config.json")
-APRS_VERSION = "OpenCPN-AIS-APRS 1.1"
+APRS_VERSION = "OpenCPN-AIS-APRS 1.1.1"
 
 DEFAULTS = {
     # General
@@ -290,6 +290,7 @@ class Engine:
                 self.status(ais=t("connecting"))
                 try:
                     async with websockets.connect(ais.AISSTREAM_URL, ping_interval=20,
+                                                  ssl=ais.ssl_context(),
                                                   open_timeout=60) as ws:
                         await ws.send(json.dumps(sub))
                         self.status(ais=t("connected"))
